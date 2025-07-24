@@ -29,10 +29,10 @@ type BookService interface {
 // ServiceMetrics tracks service performance
 type ServiceMetrics struct {
 	mu           sync.RWMutex
-	requestCount int64
-	cacheHits    int64
-	cacheMisses  int64
-	avgLatency   time.Duration
+	RequestCount int64         `json:"request_count"`
+	CacheHits    int64         `json:"cache_hits"`
+	CacheMisses  int64         `json:"cache_misses"`
+	AvgLatency   time.Duration `json:"avg_latency"`
 }
 
 // bookService implements BookService interface with enhanced features
@@ -135,14 +135,14 @@ func (s *bookService) GetBookByID(id uuid.UUID) (*models.Book, error) {
 	if s.cache != nil {
 		if book, found := s.cache.GetBook(id); found {
 			s.metrics.mu.Lock()
-			s.metrics.cacheHits++
+			s.metrics.CacheHits++
 			s.metrics.mu.Unlock()
 			return book, nil
 		}
 
 		// Cache miss
 		s.metrics.mu.Lock()
-		s.metrics.cacheMisses++
+		s.metrics.CacheMisses++
 		s.metrics.mu.Unlock()
 	}
 
@@ -168,14 +168,14 @@ func (s *bookService) GetAllBooks(filter models.BookFilter) (*models.BooksListRe
 	if s.cache != nil {
 		if response, found := s.cache.GetBookList(filter); found {
 			s.metrics.mu.Lock()
-			s.metrics.cacheHits++
+			s.metrics.CacheHits++
 			s.metrics.mu.Unlock()
 			return response, nil
 		}
 
 		// Cache miss
 		s.metrics.mu.Lock()
-		s.metrics.cacheMisses++
+		s.metrics.CacheMisses++
 		s.metrics.mu.Unlock()
 	}
 
@@ -356,12 +356,18 @@ func (s *bookService) BulkCreateBooks(requests []*models.CreateBookRequest) ([]*
 	return books, errors
 }
 
-// GetMetrics returns service metrics
+// GetMetrics returns service metrics safely (without copying mutex)
 func (s *bookService) GetMetrics() ServiceMetrics {
 	s.metrics.mu.RLock()
 	defer s.metrics.mu.RUnlock()
 
-	return *s.metrics
+	// Return a copy without the mutex
+	return ServiceMetrics{
+		RequestCount: s.metrics.RequestCount,
+		CacheHits:    s.metrics.CacheHits,
+		CacheMisses:  s.metrics.CacheMisses,
+		AvgLatency:   s.metrics.AvgLatency,
+	}
 }
 
 // Shutdown gracefully shuts down the service
@@ -431,9 +437,9 @@ func (s *bookService) recordMetrics(start time.Time) {
 	duration := time.Since(start)
 
 	s.metrics.mu.Lock()
-	s.metrics.requestCount++
+	s.metrics.RequestCount++
 	// Simple moving average
-	s.metrics.avgLatency = (s.metrics.avgLatency + duration) / 2
+	s.metrics.AvgLatency = (s.metrics.AvgLatency + duration) / 2
 	s.metrics.mu.Unlock()
 }
 

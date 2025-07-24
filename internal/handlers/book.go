@@ -386,9 +386,14 @@ func (h *BookHandler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	h.metrics.mu.RUnlock()
 
-	// Add service metrics
+	// Add service metrics safely
 	serviceMetrics := h.bookService.GetMetrics()
-	metrics["service_metrics"] = serviceMetrics
+	metrics["service_metrics"] = map[string]interface{}{
+		"request_count": serviceMetrics.RequestCount,
+		"cache_hits":    serviceMetrics.CacheHits,
+		"cache_misses":  serviceMetrics.CacheMisses,
+		"avg_latency":   serviceMetrics.AvgLatency,
+	}
 
 	h.writeSuccessResponse(w, http.StatusOK, "Metrics retrieved successfully", metrics)
 }
