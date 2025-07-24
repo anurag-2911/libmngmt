@@ -679,9 +679,7 @@ pgbench -c 10 -T 60 -h localhost -U libuser libmngmt
 
 **Conclusion:** The current architecture can handle 1M requests/day with Redis caching. For 10M+ requests/day, horizontal scaling with load balancing becomes essential.
 
-## 🤝 Contributing
 
-We welcome contributions! Please see our contribution guidelines:
 
 ### Development Process
 
