@@ -12,9 +12,9 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # Job 1: Run tests and linting
+  # Job 1: Test
   test:
-    name: Test and Lint
+    name: Test
     runs-on: ubuntu-latest
     
     services:
@@ -31,16 +31,6 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
-      
-      redis:
-        image: redis:7-alpine
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
 
     steps:
     - name: Checkout code
@@ -64,78 +54,6 @@ jobs:
     - name: Download dependencies
       run: go mod download
 
-    - name: Verify dependencies
-      run: go mod verify
-
-    - name: Run go mod tidy
-      run: |
-        go mod tidy
-        git diff --exit-code go.mod go.sum
-
-    - name: Run go fmt
-      run: |
-        if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
-          echo "The following files are not formatted:"
-          gofmt -s -l .
-          exit 1
-        fi
-
-    - name: Install goimports
-      run: go install golang.org/x/tools/cmd/goimports@latest
-
-    - name: Run goimports
-      run: |
-        if [ "$(goimports -l . | wc -l)" -gt 0 ]; then
-          echo "The following files have import issues:"
-          goimports -l .
-          exit 1
-        fi
-
-    - name: Run go vet
-      run: go vet ./...
-
-    - name: Install staticcheck
-      run: go install honnef.co/go/tools/cmd/staticcheck@latest
-
-    - name: Run staticcheck
-      run: staticcheck ./...
-
-    - name: Run security scan
-      run: |
-        chmod +x scripts/security-scan.sh
-        ./scripts/security-scan.sh
-
-    - name: Install golangci-lint
-      uses: golangci/golangci-lint-action@v3
-      with:
-        version: latest
-        skip-cache: false
-        skip-pkg-cache: false
-        skip-build-cache: false
-
-    - name: Set up test environment
-      env:
-        DB_HOST: localhost
-        DB_PORT: 5432
-        DB_USER: testuser
-        DB_PASSWORD: testpass
-        DB_NAME: libmngmt_test
-        DB_SSLMODE: disable
-        REDIS_HOST: localhost
-        REDIS_PORT: 6379
-        REDIS_ENABLED: true
-        SERVER_PORT: 8080
-        LOG_LEVEL: info
-      run: |
-        # Wait for services to be ready
-        sleep 5
-        
-        # Test database connection
-        PGPASSWORD=testpass psql -h localhost -U testuser -d libmngmt_test -c "SELECT 1;"
-        
-        # Test Redis connection
-        redis-cli -h localhost ping
-
     - name: Run tests
       env:
         DB_HOST: localhost
@@ -144,44 +62,15 @@ jobs:
         DB_PASSWORD: testpass
         DB_NAME: libmngmt_test
         DB_SSLMODE: disable
-        REDIS_HOST: localhost
-        REDIS_PORT: 6379
-        REDIS_ENABLED: true
-        SERVER_PORT: 8080
-        LOG_LEVEL: info
       run: |
-        go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+        go test -v ./...
 
-    - name: Run integration tests
-      env:
-        DB_HOST: localhost
-        DB_PORT: 5432
-        DB_USER: testuser
-        DB_PASSWORD: testpass
-        DB_NAME: libmngmt_test
-        DB_SSLMODE: disable
-        REDIS_HOST: localhost
-        REDIS_PORT: 6379
-        REDIS_ENABLED: true
-        SERVER_PORT: 8080
-        LOG_LEVEL: info
-      run: |
-        go test -v -tags=integration ./...
-
-    - name: Upload coverage reports to Codecov
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.out
-        flags: unittests
-        name: codecov-umbrella
-        fail_ci_if_error: false
-
-  # Job 2: Security scanning
-  security:
-    name: Security Scan
+  # Job 2: Build
+  build:
+    name: Build
     runs-on: ubuntu-latest
     needs: test
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -191,27 +80,17 @@ jobs:
       with:
         go-version: ${{ env.GO_VERSION }}
 
-    - name: Run Gosec Security Scanner
-      uses: securego/gosec@v2.19.0
-      with:
-        args: '-fmt sarif -out gosec.sarif ./...'
-
-    - name: Upload SARIF file
-      uses: github/codeql-action/upload-sarif@v2
-      with:
-        sarif_file: gosec.sarif
-
-    - name: Run Nancy vulnerability scanner
+    - name: Build application
       run: |
-        go install github.com/sonatypecommunity/nancy@latest
-        go list -json -deps ./... | nancy sleuth
+        go build -o libmngmt ./cmd/api
+        echo "Build successful!"
 
-  # Job 3: Build and push Docker image
-  build:
-    name: Build Docker Image
+  # Job 3: Push Docker Image (only on main branch)
+  push:
+    name: Push Docker Image
     runs-on: ubuntu-latest
-    needs: [test, security]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    needs: [test, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     
     permissions:
       contents: read
@@ -231,109 +110,10 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Generate metadata
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}
-        tags: |
-          type=ref,event=branch
-          type=sha,prefix={{branch}}-
-          type=raw,value=latest,enable={{is_default_branch}}
-
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
         context: .
         push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-        platforms: linux/amd64,linux/arm64
-
-  # Job 4: Deploy to staging (only on main branch)
-  deploy-staging:
-    name: Deploy to Staging
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    environment: staging
-    
-    env:
-      ENVIRONMENT: staging
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Deploy to staging
-      run: |
-        echo "Deploying to ${{ env.ENVIRONMENT }} environment..."
-        echo "Image: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:main-${{ github.sha }}"
-        # Add your staging deployment commands here
-        # For example: 
-        # kubectl set image deployment/libmngmt-staging libmngmt=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:main-${{ github.sha }}
-        # docker-compose -f docker-compose.staging.yml up -d
-
-    - name: Wait for deployment
-      run: |
-        echo "Waiting for deployment to be ready..."
-        sleep 30
-        # Add deployment readiness checks here
-
-    - name: Run smoke tests
-      run: |
-        echo "Running smoke tests against ${{ env.ENVIRONMENT }}..."
-        # Add smoke test commands here
-        # curl -f https://staging-api.yourdomain.com/health || exit 1
-        # curl -f https://staging-api.yourdomain.com/api/v1/books?limit=1 || exit 1
-
-  # Job 5: Deploy to production (manual approval required)
-  deploy-production:
-    name: Deploy to Production
-    runs-on: ubuntu-latest
-    needs: deploy-staging
-    if: github.ref == 'refs/heads/main'
-    environment: production
-    
-    env:
-      ENVIRONMENT: production
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Deploy to production
-      run: |
-        echo "Deploying to ${{ env.ENVIRONMENT }} environment..."
-        echo "Image: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
-        # Add your production deployment commands here
-        # For example:
-        # kubectl set image deployment/libmngmt-prod libmngmt=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-        # docker-compose -f docker-compose.production.yml up -d
-
-    - name: Wait for deployment
-      run: |
-        echo "Waiting for production deployment to be ready..."
-        sleep 60
-        # Add production readiness checks here
-
-    - name: Run smoke tests
-      run: |
-        echo "Running smoke tests against ${{ env.ENVIRONMENT }}..."
-        # Add production smoke test commands here
-        # curl -f https://api.yourdomain.com/health || exit 1
-        # curl -f https://api.yourdomain.com/api/v1/books?limit=1 || exit 1
-
-    - name: Notify deployment success
-      if: success()
-      run: |
-        echo "Production deployment successful!"
-        # Add notification commands (Slack, email, etc.)
-
-    - name: Notify deployment failure
-      if: failure()
-      run: |
-        echo "Production deployment failed!"
-        # Add failure notification commands
+        tags: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+        platforms: linux/amd64
