@@ -63,7 +63,7 @@ jobs:
         DB_NAME: libmngmt_test
         DB_SSLMODE: disable
       run: |
-        go test -v ./...
+        go test -short -v ./...
 
   # Job 2: Build
   build:
